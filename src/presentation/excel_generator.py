@@ -1,0 +1,164 @@
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from src.core.models import EmployeeAnnualReport
+from src.core.config import GlobalConfig
+from typing import List, Dict
+from datetime import date
+
+class ExcelReportGenerator:
+    """
+    Excel 报表生成器。
+    Presentation 层组件，只负责将业务模型数据渲染为格式化的 Excel 报表。
+    """
+    
+    def __init__(self, output_path: str):
+        self.output_path = output_path
+        self.wb = Workbook()
+        self.ws = self.wb.active
+        
+        target_year = GlobalConfig.get_year()
+        self.ws.title = f"{target_year}年员工年休假统计表"
+        
+        # 预定义样式
+        self.font_bold = Font(bold=True, name='宋体', size=11)
+        self.font_normal = Font(name='宋体', size=11)
+        self.align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        self.border_thin = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+    def generate(self, reports: List[EmployeeAnnualReport], active_holidays: Dict[int, List[date]]):
+        """执行报表生成逻辑。"""
+        print(f"正在生成报表，包含 {len(reports)} 条员工记录...")
+        self._setup_headers(active_holidays)
+        self._fill_data(reports, active_holidays)
+        self.wb.save(self.output_path)
+        print(f"报表已保存至: {self.output_path}")
+
+    def _setup_headers(self, active_holidays: Dict[int, List[date]]):
+        """配置多级表头结构。"""
+        target_year = GlobalConfig.get_year()
+        # holidays_config = GlobalConfig.get_holidays() # 不再使用全量配置
+        
+        # 确保 active_holidays 包含所有月份，即使是空的
+        # 如果某些月份还没有数据，active_holidays 可能不包含该月
+        # 但我们仍然需要生成 1-12 月的列头（哪怕没有节假日列）
+        # 这样才能保证 "对于考勤表中尚未出现的月份，年休假统计表仍需显示对应列"
+        
+        # 第一行标题
+        self.ws.merge_cells('B2:E2')
+        self.ws['B2'] = f"{target_year}年员工年休假统计表"
+        self.ws['B2'].font = Font(bold=True, size=16)
+        self.ws['B2'].alignment = self.align_center
+
+        # 固定列头（序号、姓名等）
+        static_headers = ["序号", "姓名", "部门", "入职日期", "年休假天数\n（期初）"]
+        col_idx = 2
+        for h in static_headers:
+            c = self.ws.cell(row=4, column=col_idx, value=h)
+            self.ws.merge_cells(start_row=4, start_column=col_idx, end_row=5, end_column=col_idx)
+            c.font = self.font_bold
+            c.alignment = self.align_center
+            c.border = self.border_thin
+            col_idx += 1
+        
+        # 月度动态列头（扣除 + 节假日）
+        self.month_col_map = {}   # 记录“扣除”列的索引
+        self.holiday_col_map = {} # 记录节假日日期列的索引
+
+        for m in range(1, 13):
+            # 仅使用考勤表中实际出现的节假日
+            # 如果 active_holidays 没有该月，默认为空列表，此时只会生成“扣除”列
+            holidays = active_holidays.get(m, [])
+            width = 1 + len(holidays)  # 1列扣除 + N列节假日
+            
+            # 月份大标题（第4行）
+            start_col = col_idx
+            end_col = col_idx + width - 1
+            c = self.ws.cell(row=4, column=start_col, value=f"{m}月")
+            if width > 1:
+                self.ws.merge_cells(start_row=4, start_column=start_col, end_row=4, end_column=end_col)
+            c.font = self.font_bold
+            c.alignment = self.align_center
+            c.border = self.border_thin
+            
+            # 子列头（第5行）：扣除
+            c_deduct = self.ws.cell(row=5, column=col_idx, value="扣除") # 改回“扣除”，之前改成了“当月休假”
+            c_deduct.font = self.font_normal
+            c_deduct.alignment = self.align_center
+            c_deduct.border = self.border_thin
+            self.month_col_map[m] = col_idx
+            col_idx += 1
+            
+            # 子列头（第5行）：具体节假日
+            for h_date in holidays:
+                date_str = f"{h_date.month}.{h_date.day}"
+                c_h = self.ws.cell(row=5, column=col_idx, value=date_str)
+                c_h.font = self.font_normal
+                c_h.alignment = self.align_center
+                c_h.border = self.border_thin
+                self.holiday_col_map[h_date] = col_idx
+                col_idx += 1
+        
+        # 汇总列头
+        summary_headers = ["合计已休", "剩余未休", "补假", "备注"]
+        self.summary_col_map = {}
+        for h in summary_headers:
+            c = self.ws.cell(row=4, column=col_idx, value=h)
+            self.ws.merge_cells(start_row=4, start_column=col_idx, end_row=5, end_column=col_idx)
+            c.font = self.font_bold
+            c.alignment = self.align_center
+            c.border = self.border_thin
+            self.summary_col_map[h] = col_idx
+            col_idx += 1
+
+    def _fill_data(self, reports: List[EmployeeAnnualReport], active_holidays: Dict[int, List[date]]):
+        """填充员工业务数据。"""
+        current_row = 6
+        for report in reports:
+            emp = report.employee
+            
+            # 填充固定列
+            self._set_cell(current_row, 2, emp.index)
+            self._set_cell(current_row, 3, emp.name)
+            self._set_cell(current_row, 4, emp.department)
+            self._set_cell(current_row, 5, emp.join_date)
+            
+            # 期初余额：优先使用 calculated_opening_balance (包含增量)，
+            # 但为了与考勤表"剩余未休"区分，我们是否应该显示 calculated？
+            # 这里的列名是 "年休假天数（期初）"，通常指本年度总可用天数。
+            self._set_cell(current_row, 6, emp.calculated_opening_balance)
+            
+            # 填充月度数据
+            for m in range(1, 13):
+                # 即使没有记录，也要处理（显示空值）
+                record = report.monthly_records.get(m)
+                
+                # 如果记录存在且有实际休假数据，则填充；否则为空
+                deduction_val = record.deduction if record else None
+                # 如果是0，是否显示？通常显示为0或空。这里保留原值。
+                self._set_cell(current_row, self.month_col_map[m], deduction_val)
+                
+                # 填充节假日状态 (仅填充活跃的节假日)
+                holidays = active_holidays.get(m, [])
+                for h_date in holidays:
+                    status = ''
+                    if record:
+                        status = record.holiday_statuses.get(h_date, '')
+                    
+                    # 确保未出现的月份显示为空，而不是默认值
+                    if h_date in self.holiday_col_map:
+                        self._set_cell(current_row, self.holiday_col_map[h_date], status)
+            
+            # 填充汇总数据
+            self._set_cell(current_row, self.summary_col_map["合计已休"], report.total_deduction)
+            self._set_cell(current_row, self.summary_col_map["剩余未休"], report.remaining_balance)
+            self._set_cell(current_row, self.summary_col_map["补假"], report.total_bonus)
+            self._set_cell(current_row, self.summary_col_map["备注"], report.notes)
+            
+            current_row += 1
+
+    def _set_cell(self, row, col, value):
+        """辅助方法：设置单元格值并应用边框。"""
+        c = self.ws.cell(row=row, column=col, value=value)
+        c.border = self.border_thin
+        c.alignment = self.align_center

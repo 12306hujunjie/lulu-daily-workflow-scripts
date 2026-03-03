@@ -1,0 +1,12 @@
+.venv/
+.poetry_cache/
+build/
+dist/
+__pycache__/
+.idea/
+*.spec
+*.pyc
+*.pyo
+*.pyd
+*.xlsx
+~$*.xlsx

@@ -197,7 +197,7 @@ class ExcelReader(BaseModel):
                     # 只有在处理 1 月份考勤表时，才读取"截止到上月底剩余未休"作为年度增量
                     # 对于非1月份出现的员工（中途入职或1月无记录），该值默认为0
                     
-                    opening_balance_val = 0.0
+                    last_year_balance_val = 0.0
                     if month == 1:
                         col_balance = '截止到上月底剩余未休'
                         # 模糊匹配列名
@@ -209,7 +209,7 @@ class ExcelReader(BaseModel):
                                 
                         if matched_col and pd.notna(row[matched_col]):
                             try:
-                                opening_balance_val = float(row[matched_col])
+                                last_year_balance_val = float(row[matched_col])
                             except:
                                 pass
                     
@@ -218,15 +218,8 @@ class ExcelReader(BaseModel):
                         name=name,
                         department=dept,
                         join_date=join_date_raw,
-                        opening_balance=opening_balance_val
+                        last_year_balance=last_year_balance_val
                     )
-                    
-                    # 更新 opening_balance 为计算值 (确保报表显示正确)
-                    # 注意：EmployeeBase 的 calculated_opening_balance 已经包含了 opening_balance_val
-                    # 这里不需要再赋值回去，因为 computed_field 是只读的属性
-                    # 但为了让 models.py 中的 remaining_balance 使用正确的值，我们需要确保 emp.opening_balance 保持原始读取值
-                    # models.py 中的 calculated_opening_balance = flexible_quota + opening_balance
-                    # 所以 emp.opening_balance 应该存储增量值 (opening_balance_val)
                     
                     self.employees[name] = emp
                     index_counter += 1
@@ -237,24 +230,12 @@ class ExcelReader(BaseModel):
                     try: actual_leave = float(row['休假天数'])
                     except: pass
                 
-                # 提取额外字段 (仅供参考，不参与核心计算了)
-                balance_end_last = None
-                if '截止到上月底剩余未休' in row and pd.notna(row['截止到上月底剩余未休']):
-                    try: balance_end_last = float(row['截止到上月底剩余未休'])
-                    except: pass
+                # 提取额外字段 (不再需要 balance_end_last)
                 
                 start_time = row.get('出场时间')
                 end_time = row.get('返场时间')
                 
-                snapshot_inc = None
-                if '年剩余假期（含法定节假日）' in row and pd.notna(row['年剩余假期（含法定节假日）']):
-                    try: snapshot_inc = float(row['年剩余假期（含法定节假日）'])
-                    except: pass
-                
-                snapshot_exc = None
-                if '年剩余假期（不含未来法定节假日）' in row and pd.notna(row['年剩余假期（不含未来法定节假日）']):
-                    try: snapshot_exc = float(row['年剩余假期（不含未来法定节假日）'])
-                    except: pass
+                # ... (snapshot 字段略)
 
                 # 提取节假日状态
                 # present_holidays 现在包含了所有法定假日
@@ -273,33 +254,16 @@ class ExcelReader(BaseModel):
                     
                     if matched_col:
                         val = row[matched_col]
-                        status = str(val).strip() if pd.notna(val) else '班'
+                        status = str(val).strip() if pd.notna(val) else ''
                         holiday_statuses[h_date] = status
                     else:
-                        # 如果考勤表中没有这一列，通常意味着这不是一个需要在该月特别标注的日子，
-                        # 或者该月数据尚未生成。
-                        # 为了统计表展示，我们将其标记为 '班' (默认工作状态) 或者 '' (空，表示未知/未发生)
-                        # 用户之前的需求是：空缺月份显示为空值
-                        # 如果考勤表存在（df不为空），但没有这列，说明可能是普通工作日或未记录
-                        # 暂时设为 '班' 以保持兼容，或者 ''？
-                        # 用户说 "未在考勤表中体现的月份，为什么没有相关的休假列？这些应该是固定的...这些空缺月份的休假数值应显示为空值"
-                        # 这里是处理 "已存在的考勤表"。
-                        # 如果考勤表里没这列，但确实是法定假，可能是还没发生，或者没记录。
-                        # 既然是法定假，理论上应该有记录。如果没记录，可能是还没到那天？
-                        # 我们设为 '班'，但在 Presentation 层，如果整个月份都没记录，会显示为空。
-                        # 但如果月份存在，只是列不存在，那应该显示什么？
-                        # 假设如果列不存在，就是正常上班？
-                        holiday_statuses[h_date] = '班'
+                        # 考勤表无此列，默认为空
+                        holiday_statuses[h_date] = ''
 
                 record = MonthlyAttendance(
                     month=month,
                     actual_leave_days=actual_leave,
-                    holiday_statuses=holiday_statuses,
-                    balance_end_of_last_month=balance_end_last,
-                    start_time=start_time,
-                    end_time=end_time,
-                    snapshot_annual_balance_inc_holidays=snapshot_inc,
-                    snapshot_annual_balance_exc_future_holidays=snapshot_exc
+                    holiday_statuses=holiday_statuses
                 )
                 
                 if name not in self.attendance_records:
@@ -325,5 +289,9 @@ class ExcelReader(BaseModel):
                 employee=emp,
                 monthly_records=full_monthly_data
             )
+            
+            # 关键：执行递归计算
+            report.calculate_monthly_balances()
+            
             reports.append(report)
         return reports

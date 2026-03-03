@@ -1,0 +1,36 @@
+name: Publish to GitHub Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.7.1
+
+      - name: Configure Poetry for GitHub Packages
+        run: |
+          poetry config repositories.github https://maven.pkg.github.com/12306hujunjie
+          poetry config http-basic.github ${{ github.actor }} ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Publish
+        run: |
+          poetry build
+          poetry publish --repository github

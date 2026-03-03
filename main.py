@@ -12,6 +12,11 @@ ATTENDANCE_FILE = "外围生物安全考勤表2026.xlsx"
 # 这里我们采用一个启发式规则：先尝试检测考勤表年份，然后构造历史表文件名
 HISTORICAL_STATS_FILE_TEMPLATE = "{year}年员工年休假统计表-12月.xlsx"
 
+def get_runtime_base_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
 def main():
     """
     主程序入口。
@@ -23,9 +28,9 @@ def main():
     # 为了构建历史表路径，我们需要先知道年份。
     # 这里我们简单地先初始化 Reader，load 考勤表，拿到年份后，再决定是否 reload 历史表。
     
-    reader = ExcelReader(
-        attendance_file_path=ATTENDANCE_FILE
-    )
+    base_dir = get_runtime_base_dir()
+    attendance_path = os.path.join(base_dir, ATTENDANCE_FILE)
+    reader = ExcelReader(attendance_file_path=attendance_path)
     
     try:
         # 第一步：只加载考勤表，为了识别年份
@@ -48,7 +53,7 @@ def main():
         print(f"正在寻找历史统计表，关键词: {keywords}")
         
         # 遍历当前目录下的所有文件进行模糊匹配
-        for filename in os.listdir('.'):
+        for filename in os.listdir(base_dir):
             # 忽略非xlsx文件和临时文件
             if not filename.endswith('.xlsx') or filename.startswith('~$'):
                 continue
@@ -56,7 +61,7 @@ def main():
             # 检查是否包含关键词
             for kw in keywords:
                 if kw in filename:
-                    historical_path = filename
+                    historical_path = os.path.join(base_dir, filename)
                     break
             
             if historical_path:
@@ -83,7 +88,7 @@ def main():
     reports = reader.get_full_reports()
     
     # 4. 生成报表 (Presentation)
-    output_path = f"{target_year}年员工年休假统计表_Final.xlsx"
+    output_path = os.path.join(base_dir, f"{target_year}年员工年休假统计表_Final.xlsx")
     generator = ExcelReportGenerator(output_path=output_path)
     try:
         # 将 Reader 中识别到的活跃节假日配置传递给生成器
@@ -96,5 +101,5 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    sys.path.append(os.getcwd())
+    sys.path.append(get_runtime_base_dir())
     main()
